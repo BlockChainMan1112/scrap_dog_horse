@@ -14,23 +14,40 @@ collection = db['data']
 # Function to save data to the database with partial updates
 def save_data_to_db(scraped_data):
     for venue, data in scraped_data.items():
+        # Check if the venue exists in the database
         existing_venue = collection.find_one({'venue': venue})
         
         # If the venue does not exist, insert it
         if not existing_venue:
             print(f"Inserting new venue: {venue}")
-            collection.insert_one({'venue': venue, 'race_times': data['race_times']})
+            collection.insert_one({
+                'venue': venue, 
+                'race_times': data['race_times']  # Insert all race times as it's a new venue
+            })
         else:
-            # Compare and update race_times
+            # Ensure race_times exists as an array in the existing venue
+            if 'race_times' not in existing_venue or not isinstance(existing_venue['race_times'], list):
+                print(f"Initializing race_times array for venue: {venue}")
+                collection.update_one(
+                    {'venue': venue},
+                    {'$set': {'race_times': []}}
+                )
+                existing_venue['race_times'] = []  # Update local reference as well
+            
+            # Compare and update race_times for the existing venue
             for new_race in data['race_times']:
+                # Find the existing race by race name
                 existing_race = next((race for race in existing_venue['race_times'] if race['race'] == new_race['race']), None)
 
                 # If the race does not exist, add the new race
                 if not existing_race:
                     print(f"Adding new race {new_race['race']} to venue {venue}")
-                    collection.update_one({'venue': venue}, {'$push': {'race_times': new_race}})
+                    collection.update_one(
+                        {'venue': venue},
+                        {'$push': {'race_times': new_race}}
+                    )
                 else:
-                    # Compare times and runners, and update if necessary
+                    # Compare and update race times
                     if existing_race['time'] != new_race['time']:
                         print(f"Updating race time for {new_race['race']} at venue {venue}")
                         collection.update_one(
@@ -67,13 +84,6 @@ chrome_options.add_argument("--headless")  # Run in headless mode
 webdriver_service = Service()  # Replace with your actual path
 driver = webdriver.Chrome(service=webdriver_service, options=chrome_options)
 
-# Function to safely parse strings to float
-def parse_float(value):
-    try:
-        return float(value)
-    except ValueError:
-        return 0  # Return a default value if conversion fails
-
 # Function to scrape the runner details using Selenium
 def scrape_race_runners(odds_url):
     base_url = "https://www.thedogs.com.au"
@@ -104,18 +114,15 @@ def scrape_race_runners(odds_url):
 
             # Get low odds
             low_td = tbody.find('runner-odd-fluctuation-low')
-            low_text = low_td.find('span', class_='runner-odd__fluctuation').get_text(strip=True) if low_td else '0'
-            low = parse_float(low_text)
+            low = parse_odds(low_td.find('span', class_='runner-odd__fluctuation').get_text(strip=True)) if low_td else 0
 
             # Get high odds
             high_td = tbody.find('runner-odd-fluctuation-high')
-            high_text = high_td.find('span', class_='runner-odd__fluctuation').get_text(strip=True) if high_td else '0'
-            high = parse_float(high_text)
+            high = parse_odds(high_td.find('span', class_='runner-odd__fluctuation').get_text(strip=True)) if high_td else 0
 
             # Get current odds
             odds_td = tbody.find('runner-odd')
-            odds_text = odds_td.find('span', class_='runner-odd__price').get_text(strip=True) if odds_td else '0'
-            odds = parse_float(odds_text)
+            odds = parse_odds(odds_td.find('span', class_='runner-odd__price').get_text(strip=True)) if odds_td else 0
 
             # Add data to the runner dictionary
             runner['number'] = runner_number
@@ -128,6 +135,13 @@ def scrape_race_runners(odds_url):
             runner_data.append(runner)
 
     return runner_data
+
+# Helper function to parse odds and handle the 'N/A' case
+def parse_odds(value):
+    try:
+        return float(value)
+    except ValueError:
+        return 0  # Return 0 if the value is not convertible to float
 
 # Function to scrape data from a single table and aggregate race times
 def scrape_table(tbody):
